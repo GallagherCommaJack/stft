@@ -67,7 +67,7 @@ use num::traits::{Float, Signed, Zero};
 
 use strider::{SliceRing, SliceRingImpl};
 
-use rustfft::{FFTnum, FFTplanner, FFT};
+use rustfft::{Fft, FftNum, FftPlanner};
 
 /// returns `0` if `log10(value).is_negative()`.
 /// otherwise returns `log10(value)`.
@@ -140,22 +140,23 @@ impl WindowType {
 
 pub struct STFT<T>
 where
-    T: FFTnum + From<f64> + num::Float,
+    T: FftNum + From<f64> + num::Float,
 {
     pub window_size: usize,
     pub step_size: usize,
-    pub fft: Arc<dyn FFT<T>>,
+    pub fft: Arc<dyn Fft<T>>,
     pub window: Option<Vec<T>>,
     /// internal ringbuffer used to store samples
     pub sample_ring: SliceRingImpl<T>,
     pub real_input: Vec<T>,
     pub complex_input: Vec<Complex<T>>,
     pub complex_output: Vec<Complex<T>>,
+    pub scratch: Vec<Complex<T>>,
 }
 
 impl<T> STFT<T>
 where
-    T: FFTnum + From<f64> + num::Float,
+    T: FftNum + From<f64> + num::Float,
 {
     pub fn window_type_to_window_vec(
         window_type: WindowType,
@@ -192,12 +193,13 @@ where
         assert!(step_size <= window_size);
         assert!(step_size > 0);
         assert!(window_size.count_ones() == 1);
-        let inverse = false;
-        let mut planner = FFTplanner::new(inverse);
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(window_size);
+        let scratch = vec![Complex::zero(); fft.get_outofplace_scratch_len()];
         STFT {
             window_size,
             step_size,
-            fft: planner.plan_fft(window_size),
+            fft,
             sample_ring: SliceRingImpl::new(),
             window,
             real_input: std::iter::repeat(T::zero()).take(window_size).collect(),
@@ -207,6 +209,7 @@ where
             complex_output: std::iter::repeat(Complex::<T>::zero())
                 .take(window_size)
                 .collect(),
+            scratch,
         }
     }
 
@@ -248,8 +251,11 @@ where
         }
 
         // compute fft
-        self.fft
-            .process(&mut self.complex_input, &mut self.complex_output);
+        self.fft.process_outofplace_with_scratch(
+            &mut self.complex_input,
+            &mut self.complex_output,
+            &mut self.scratch,
+        );
     }
 
     /// # Panics
